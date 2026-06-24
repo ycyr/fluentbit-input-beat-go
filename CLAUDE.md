@@ -44,16 +44,18 @@ fluent-bit -e ./in_beats.so -c fluent-bit.conf   # load the .so directly
 
 ### End-to-end stack
 
-`docker-compose.yml` brings up the full loop for manual verification:
+`example/docker-compose.yml` brings up the full loop for manual verification:
 `flog` generates logs → `filebeat` ships them via lumberjack → this plugin
-(inside the `fluent-bit` image) prints them to stdout.
+(inside the `fluent-bit` image) prints them to stdout. Its build context is the
+repo root (`build: ..`), where the plugin and `Dockerfile` live.
 
 ```bash
-docker compose up --build
+docker compose -f example/docker-compose.yml up --build   # or: cd example && docker compose up --build
 ```
 
-`Dockerfile` runs the same go.mod fixup as above in its build stage, then copies
-`in_beats.so`, `plugins.conf`, and `fluent-bit.conf` into the Fluent Bit image.
+`Dockerfile` (repo root) runs the same go.mod fixup as above in its build stage,
+then copies `in_beats.so`, `plugins.conf`, and `fluent-bit.conf` into the Fluent
+Bit image.
 
 ## Lifecycle (CGo-exported entry points in main.go)
 

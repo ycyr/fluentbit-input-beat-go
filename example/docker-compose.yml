@@ -1,6 +1,6 @@
 services:
   fluent-bit:
-    build: .
+    build: ..        # plugin + Dockerfile live in the repo root, one level up
     ports:
       - "5044:5044"
 
