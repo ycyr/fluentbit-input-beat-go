@@ -24,40 +24,6 @@ jobs:
       - run: go mod download
       - run: CGO_ENABLED=1 go test -v ./...
 
-  # ── Build (amd64 + arm64) ──────────────────────────────────────────────────
-  build:
-    name: Build (${{ matrix.arch }})
-    needs: test
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            cc: gcc
-          - arch: arm64
-            cc: aarch64-linux-gnu-gcc
-            apt: gcc-aarch64-linux-gnu
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Install cross-compiler
-        if: matrix.apt != ''
-        run: sudo apt-get install -y ${{ matrix.apt }}
-      - run: go mod download
-      - name: Build shared object
-        env:
-          CGO_ENABLED: 1
-          GOOS: linux
-          GOARCH: ${{ matrix.arch }}
-          CC: ${{ matrix.cc }}
-        run: go build -trimpath -buildmode=c-shared -o in_beats.so .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: in_beats-linux-${{ matrix.arch }}
-          path: in_beats.so
-
   # ── Integration tests (push to main only — pulls many Docker images) ────────
   integration:
     name: Integration tests
