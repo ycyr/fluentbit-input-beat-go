@@ -27,6 +27,7 @@ jobs:
   # ── Build (amd64 + arm64) ──────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.arch }})
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
