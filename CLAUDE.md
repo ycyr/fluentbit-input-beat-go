@@ -34,7 +34,28 @@ CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o in_beats.so .
 ```
 
 `buildmode=c-shared` is required (the plugin loads as `in_beats.so`); the
-generated `in_beats.h` can be ignored. There are no Go tests in this repo.
+generated `in_beats.h` can be ignored.
+
+## Tests
+
+```bash
+make test                # unit tests, no Docker
+make test-integration    # Filebeat 6 / 7 / 8 version matrix (requires Docker)
+make test-transport      # no-TLS / TLS / mTLS transport matrix (requires Docker)
+```
+
+**Unit tests** (`main_test.go`) — pure Go, no cgo in the test file (Go forbids
+`import "C"` in `_test.go`). The testable logic was extracted from the cgo
+boundary: `parseBool`/`parseInt` from `cfgBool`/`cfgInt`, and `collect()` from
+`FLBPluginInputCallback`. The end-to-end test decodes the real msgpack output
+using `github.com/ugorji/go/codec` (already a transitive dep) and verifies the
+`FLBTime` ext timestamp.
+
+**Integration tests** (`integration_test.go`, `tls_integration_test.go`) — build
+tag `integration`. `TestMain` builds the plugin image once; all subtests run in
+parallel with isolated compose projects (unique `-p` names, no host-port
+conflicts). Certs for the TLS tests are generated fresh per subtest in
+`t.TempDir()` using stdlib `crypto/x509` — no committed fixtures.
 
 ## Run
 
@@ -42,34 +63,21 @@ generated `in_beats.h` can be ignored. There are no Go tests in this repo.
 fluent-bit -e ./in_beats.so -c fluent-bit.conf   # load the .so directly
 ```
 
-### End-to-end stack
+### End-to-end demo
 
-`example/docker-compose.yml` brings up the full loop for manual verification:
-`flog` generates logs → `filebeat` ships them via lumberjack → this plugin
-(inside the `fluent-bit` image) prints them to stdout. Its build context is the
-repo root (`build: ..`), where the plugin and `Dockerfile` live.
+`make help` lists all targets. The demo stacks bring up `flog → filebeat → plugin → stdout`:
 
 ```bash
-docker compose -f example/docker-compose.yml up --build   # or: cd example && docker compose up --build
+make demo        # plaintext (example/docker-compose.yml)
+make demo-tls    # mTLS, generates certs on first run (example/docker-compose.tls.yml)
+make down        # stop both stacks
 ```
 
-`Dockerfile` (repo root) runs the same go.mod fixup as above in its build stage,
-then copies `in_beats.so`, `plugins.conf`, and `fluent-bit.conf` into the Fluent
-Bit image.
-
-For an mTLS variant of the same loop, generate throwaway certs and use the TLS
-compose file (it reuses the same image, mounting `fluent-bit.tls.conf` + certs
-over the baked-in config):
-
-```bash
-example/tls/gen-certs.sh                                   # writes example/tls/certs/ (gitignored)
-docker compose -f example/docker-compose.tls.yml up --build
-```
-
-The server cert's SAN is `DNS:fluent-bit` (the compose service name Filebeat
-dials) — required or Filebeat fails hostname verification. `ca_file` in
-`fluent-bit.tls.conf` makes it mTLS; drop it (and the client cert in
-`filebeat.tls.yml`) for plain server-TLS.
+`Dockerfile` (repo root) runs the go.mod fixup in its build stage, then copies
+`in_beats.so`, `plugins.conf`, and `fluent-bit.conf` into the Fluent Bit image.
+The TLS compose reuses the same image, mounting `example/fluent-bit.tls.conf` +
+certs over the baked-in config (`build: ..`). The server cert SAN is
+`DNS:fluent-bit`; `ca_file` makes it mTLS — drop it for plain server-TLS.
 
 ## Lifecycle (CGo-exported entry points in main.go)
 

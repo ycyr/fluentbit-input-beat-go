@@ -1,0 +1,15 @@
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths: [/logs/test.log]
+    scan_frequency: 500ms
+
+output.logstash:
+  hosts: ["fluent-bit:5044"]
+  ssl.enabled: true
+  ssl.certificate_authorities: ["/certs/ca.crt"]
+  ssl.certificate: "/certs/client.crt"
+  ssl.key: "/certs/client.key"
+
+logging.level: info
+logging.to_stderr: true

@@ -1,0 +1,20 @@
+# Shared compose for TLS and mTLS integration tests.
+# FLB_CONF, FILEBEAT_CONF, CERT_DIR, and BEATS_TEST_IMAGE are set by the test runner.
+services:
+  fluent-bit:
+    image: ${BEATS_TEST_IMAGE}
+    volumes:
+      - ${FLB_CONF}:/fluent-bit/etc/fluent-bit.conf:ro
+      - ${CERT_DIR}:/certs:ro
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.4
+    user: root
+    command: filebeat -e --strict.perms=false
+    volumes:
+      - ./test.log:/logs/test.log:ro
+      - ${FILEBEAT_CONF}:/usr/share/filebeat/filebeat.yml:ro
+      - ${CERT_DIR}:/certs:ro
+    depends_on:
+      - fluent-bit
+    restart: on-failure

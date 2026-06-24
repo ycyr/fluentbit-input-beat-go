@@ -1,0 +1,12 @@
+# Filebeat 6.x uses "prospectors" (renamed to "inputs" in 7.x).
+filebeat.prospectors:
+  - type: log
+    enabled: true
+    paths: [/logs/test.log]
+    scan_frequency: 500ms
+
+output.logstash:
+  hosts: ["fluent-bit:5044"]
+
+logging.level: info
+logging.to_stderr: true

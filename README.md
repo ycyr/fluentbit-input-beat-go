@@ -131,6 +131,22 @@ output.logstash:                 # Beats ships to Logstash-protocol = lumberjack
 Each Beats event arrives as a record whose timestamp is taken from the event's
 `@timestamp` field when present (RFC3339), otherwise the receive time.
 
+## Testing
+
+```bash
+make test                # unit tests — no Docker required
+make test-integration    # Filebeat 6, 7, 8 version matrix (requires Docker)
+make test-transport      # no-TLS, server-TLS, mTLS transport matrix (requires Docker)
+```
+
+Unit tests (`main_test.go`) cover config parsing, timestamp extraction, cert pool
+loading, and the full `collect` → msgpack encode path without cgo.
+
+Integration tests spin up the plugin image against real Filebeat containers.
+`test-integration` verifies Lumberjack v1/v2 compatibility across Filebeat
+generations; `test-transport` verifies the three TLS modes (certs are generated
+fresh per run, no fixtures committed).
+
 ## Important caveats
 
 - **Single instance per process.** The Go input callback gets no per-instance
