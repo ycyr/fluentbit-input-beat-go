@@ -1,0 +1,35 @@
+# mTLS variant of the demo loop. Run example/tls/gen-certs.sh first, then:
+#   docker compose -f example/docker-compose.tls.yml up --build
+# Reuses the same plugin image; the TLS config and certs are mounted in rather
+# than baked, so no separate Dockerfile is needed.
+services:
+  fluent-bit:
+    build: ..
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./tls/certs:/certs:ro
+      - ./fluent-bit.tls.conf:/fluent-bit/etc/fluent-bit.conf:ro
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.4
+    user: root
+    command: filebeat -e --strict.perms=false
+    volumes:
+      - logs:/logs
+      - ./filebeat.tls.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./tls/certs:/certs:ro
+    depends_on:
+      - fluent-bit
+    restart: on-failure
+
+  flog:
+    image: mingrammer/flog
+    command: ["-l", "-d", "500ms", "-t", "log", "-o", "/logs/access.log", "-w"]
+    volumes:
+      - logs:/logs
+    depends_on:
+      - filebeat
+
+volumes:
+  logs:

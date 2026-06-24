@@ -1,0 +1,18 @@
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - /logs/*.log
+    scan_frequency: 1s
+
+output.logstash:
+  hosts: ["fluent-bit:5044"]
+  ssl.enabled: true
+  ssl.certificate_authorities: ["/certs/ca.crt"]
+  # Client cert: required because the plugin runs mTLS (ca_file set). Remove
+  # these two lines if you switch the input to plain server-TLS.
+  ssl.certificate: "/certs/client.crt"
+  ssl.key: "/certs/client.key"
+
+logging.level: info
+logging.to_stderr: true

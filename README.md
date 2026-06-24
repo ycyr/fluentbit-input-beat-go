@@ -48,6 +48,31 @@ docker build -t fluent-bit-beats .
 docker run --rm -p 5044:5044 fluent-bit-beats
 ```
 
+### End-to-end demo
+
+`example/` contains a self-contained loop — `flog` generates logs, Filebeat
+ships them over lumberjack, the plugin prints them to stdout. Run it via the
+Makefile (`make help` lists targets):
+
+```bash
+make demo        # plaintext
+make demo-tls    # mTLS (generates throwaway certs on first run)
+make down        # stop both stacks
+```
+
+Equivalently, the raw commands:
+
+```bash
+docker compose -f example/docker-compose.yml up --build                 # plaintext
+example/tls/gen-certs.sh && \
+  docker compose -f example/docker-compose.tls.yml up --build            # mTLS
+```
+
+The TLS variant reuses the same image, mounting `example/fluent-bit.tls.conf`
+and the generated certs over the baked-in config. The server cert's SAN is
+`DNS:fluent-bit` (the service name Filebeat dials); `ca_file` makes it mTLS —
+drop it plus the client cert in `example/filebeat.tls.yml` for plain server-TLS.
+
 ## Configuration
 
 Because Go **input** plugins cannot use Fluent Bit's reserved keys

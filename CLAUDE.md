@@ -57,6 +57,20 @@ docker compose -f example/docker-compose.yml up --build   # or: cd example && do
 then copies `in_beats.so`, `plugins.conf`, and `fluent-bit.conf` into the Fluent
 Bit image.
 
+For an mTLS variant of the same loop, generate throwaway certs and use the TLS
+compose file (it reuses the same image, mounting `fluent-bit.tls.conf` + certs
+over the baked-in config):
+
+```bash
+example/tls/gen-certs.sh                                   # writes example/tls/certs/ (gitignored)
+docker compose -f example/docker-compose.tls.yml up --build
+```
+
+The server cert's SAN is `DNS:fluent-bit` (the compose service name Filebeat
+dials) — required or Filebeat fails hostname verification. `ca_file` in
+`fluent-bit.tls.conf` makes it mTLS; drop it (and the client cert in
+`filebeat.tls.yml`) for plain server-TLS.
+
 ## Lifecycle (CGo-exported entry points in main.go)
 
 - `FLBPluginRegister` — registers the plugin name `beats`.
