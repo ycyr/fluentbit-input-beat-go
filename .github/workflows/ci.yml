@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [main]
   pull_request:
 
 # fluent-bit-go has no tagged releases; the pseudo-version in go.mod may not
@@ -58,9 +58,10 @@ jobs:
           name: in_beats-linux-${{ matrix.arch }}
           path: in_beats.so
 
-  # ── Integration tests (push to master only — pulls many Docker images) ─────
+  # ── Integration tests (push to main only — pulls many Docker images) ────────
   integration:
     name: Integration tests
+    needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
     steps:
