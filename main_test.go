@@ -70,14 +70,29 @@ func TestParseInt(t *testing.T) {
 func TestRecordTime(t *testing.T) {
 	fallback := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	t.Run("uses @timestamp when valid RFC3339", func(t *testing.T) {
-		rec := map[string]interface{}{"@timestamp": "2026-06-24T10:11:12.5Z"}
-		got := recordTime(rec, fallback)
-		want := time.Date(2026, 6, 24, 10, 11, 12, 500_000_000, time.UTC)
-		if !got.Equal(want) {
-			t.Errorf("got %v, want %v", got, want)
-		}
-	})
+	for _, c := range []struct {
+		name string
+		ts   string
+		want time.Time
+	}{
+		// fractional seconds (.5 = 500ms)
+		{"RFC3339Nano fractional", "2026-06-24T10:11:12.5Z", time.Date(2026, 6, 24, 10, 11, 12, 500_000_000, time.UTC)},
+		// no sub-seconds — common in Filebeat 6.x and syslog-style sources
+		{"RFC3339 no nanos", "2026-06-24T10:11:12Z", time.Date(2026, 6, 24, 10, 11, 12, 0, time.UTC)},
+		// full nanosecond precision (Filebeat 7/8 default)
+		{"RFC3339Nano full nanos", "2026-06-24T10:11:12.123456789Z", time.Date(2026, 6, 24, 10, 11, 12, 123_456_789, time.UTC)},
+		// timezone offset — must normalise to UTC
+		{"RFC3339 with offset", "2026-06-24T12:11:12+02:00", time.Date(2026, 6, 24, 10, 11, 12, 0, time.UTC)},
+	} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			rec := map[string]interface{}{"@timestamp": c.ts}
+			got := recordTime(rec, fallback)
+			if !got.Equal(c.want) {
+				t.Errorf("recordTime(%q) = %v, want %v", c.ts, got, c.want)
+			}
+		})
+	}
 
 	for name, rec := range map[string]map[string]interface{}{
 		"missing key":    {"message": "hi"},
@@ -203,6 +218,92 @@ func TestCollectDoneUnblocks(t *testing.T) {
 func TestCollectNilContext(t *testing.T) {
 	if buf := collect(nil, time.Second, time.Now()); buf != nil {
 		t.Errorf("collect(nil) = %v, want nil", buf)
+	}
+}
+
+// TestCollectFilebeatEvents verifies that realistic Filebeat 8.x and 6.x event
+// payloads pass through collect unchanged, including @metadata.
+func TestCollectFilebeatEvents(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	// Filebeat 8.x event structure (ECS, agent.*, log.file.path)
+	fb8 := map[string]interface{}{
+		"@timestamp": "2026-06-24T12:34:56.789Z",
+		"@metadata":  map[string]interface{}{"beat": "filebeat", "version": "8.13.4"},
+		"message":    "service started",
+		"log":        map[string]interface{}{"file": map[string]interface{}{"path": "/var/log/app.log"}, "offset": int64(0)},
+		"agent":      map[string]interface{}{"name": "my-host", "type": "filebeat", "version": "8.13.4"},
+		"ecs":        map[string]interface{}{"version": "8.0.0"},
+		"host":       map[string]interface{}{"name": "my-host"},
+		"input":      map[string]interface{}{"type": "log"},
+	}
+
+	// Filebeat 6.x event structure (prospectors, beat.*, source field)
+	fb6 := map[string]interface{}{
+		"@timestamp": "2026-06-24T12:34:57Z",
+		"@metadata":  map[string]interface{}{"beat": "filebeat", "version": "6.8.23"},
+		"message":    "connection established",
+		"source":     "/var/log/app.log",
+		"offset":     int64(100),
+		"beat":       map[string]interface{}{"name": "my-host", "hostname": "my-host", "version": "6.8.23"},
+		"prospector": map[string]interface{}{"type": "log"},
+	}
+
+	c := &beatsContext{
+		records: make(chan map[string]interface{}, 4),
+		done:    make(chan struct{}),
+	}
+	c.records <- fb8
+	c.records <- fb6
+
+	entries := decodeFLBStream(t, collect(c, time.Millisecond, now))
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+
+	e8 := entries[0]
+	if want := time.Date(2026, 6, 24, 12, 34, 56, 789_000_000, time.UTC); !e8.ts.Equal(want) {
+		t.Errorf("fb8 ts = %v, want %v", e8.ts, want)
+	}
+	if e8.rec["message"] != "service started" {
+		t.Errorf("fb8 message = %v", e8.rec["message"])
+	}
+	if e8.rec["@metadata"] == nil {
+		t.Error("fb8 @metadata missing — want it preserved")
+	}
+
+	e6 := entries[1]
+	if want := time.Date(2026, 6, 24, 12, 34, 57, 0, time.UTC); !e6.ts.Equal(want) {
+		t.Errorf("fb6 ts = %v, want %v", e6.ts, want)
+	}
+	if e6.rec["source"] != "/var/log/app.log" {
+		t.Errorf("fb6 source = %v", e6.rec["source"])
+	}
+	if e6.rec["@metadata"] == nil {
+		t.Error("fb6 @metadata missing — want it preserved")
+	}
+}
+
+// TestCollectMaxBatch verifies collect drains at most 2048 records per call,
+// leaving the remainder for the next call.
+func TestCollectMaxBatch(t *testing.T) {
+	const total = 2048 + 5
+	c := &beatsContext{
+		records: make(chan map[string]interface{}, total),
+		done:    make(chan struct{}),
+	}
+	for i := 0; i < total; i++ {
+		c.records <- map[string]interface{}{"n": i}
+	}
+	now := time.Now()
+
+	first := decodeFLBStream(t, collect(c, time.Millisecond, now))
+	if len(first) != 2048 {
+		t.Errorf("first collect: %d entries, want 2048", len(first))
+	}
+	second := decodeFLBStream(t, collect(c, time.Millisecond, now))
+	if len(second) != 5 {
+		t.Errorf("second collect: %d entries, want 5", len(second))
 	}
 }
 

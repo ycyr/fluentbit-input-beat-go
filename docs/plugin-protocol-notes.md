@@ -1,4 +1,4 @@
-# Protocol notes for the fluent-bit-beats plugin
+# Protocol notes for the fluentbit-input-beat-go plugin
 
 Practical notes on how this plugin uses the Lumberjack protocol — things not
 covered by the upstream spec documents.
@@ -10,12 +10,9 @@ covered by the upstream spec documents.
 | Filebeat version | Protocol | Plugin config |
 |-----------------|----------|---------------|
 | < 5.x (very old) | v1 | `enable_v1 true` |
-| 5.x – 6.x | v1 or v2 | `enable_v2 true` (default) |
-| 7.x – 8.x | v2 | `enable_v2 true` (default) |
+| 5.x – 8.x | v2 | `enable_v2 true` (default) |
 
-Modern Filebeat (7+) defaults to v2. `enable_v1` is off by default because
-accepting v1 alongside v2 is safe, but adds complexity with no benefit in most
-deployments. Enable it only when connecting older agents.
+`enable_v1` is off by default. Enable it only when connecting Beats older than 5.x.
 
 ---
 

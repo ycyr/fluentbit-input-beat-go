@@ -1,4 +1,4 @@
-# fluent-bit-beats
+# fluentbit-input-beat-go
 
 A **Fluent Bit input plugin** (written in Go) that speaks the **Beats /
 Lumberjack protocol** — the wire format Filebeat and the other Elastic Beats
@@ -44,8 +44,8 @@ fluent-bit -e ./in_beats.so -c fluent-bit.conf
 Or with Docker:
 
 ```bash
-docker build -t fluent-bit-beats .
-docker run --rm -p 5044:5044 fluent-bit-beats
+docker build -t fluentbit-input-beat-go .
+docker run --rm -p 5044:5044 fluentbit-input-beat-go
 ```
 
 ### End-to-end demo
@@ -82,7 +82,7 @@ Because Go **input** plugins cannot use Fluent Bit's reserved keys
 |---------------|----------------|----------------------------------------------------------------------|
 | `address`     | `0.0.0.0:5044` | Bind address `host:port` for the listener                            |
 | `buffer_size` | `16384`        | Internal record channel capacity                                     |
-| `enable_v1`   | `false`        | Accept Lumberjack v1 (only needed for Beats older than 7.x)         |
+| `enable_v1`   | `false`        | Accept Lumberjack v1 (only needed for Beats older than 5.x)         |
 | `enable_v2`   | `true`         | Accept Lumberjack v2 (all modern Beats)                              |
 | `tls_active`  | `false`        | Enable TLS                                                           |
 | `cert_file`   | —              | PEM server certificate (required when `tls_active`)                  |
@@ -135,17 +135,32 @@ Each Beats event arrives as a record whose timestamp is taken from the event's
 
 ```bash
 make test                # unit tests — no Docker required
-make test-integration    # Filebeat 6, 7, 8 version matrix (requires Docker)
+make test-integration    # Filebeat 5, 6, 7, 8 version matrix (requires Docker)
 make test-transport      # no-TLS, server-TLS, mTLS transport matrix (requires Docker)
 ```
 
-Unit tests (`main_test.go`) cover config parsing, timestamp extraction, cert pool
-loading, and the full `collect` → msgpack encode path without cgo.
+Unit tests (`main_test.go`) cover config parsing, timestamp extraction (RFC3339
+with/without nanoseconds, timezone offsets), cert pool loading, realistic Filebeat
+5/6/8 event payloads, `@metadata` passthrough, and the `collect` → msgpack encode
+path including the 2048-record batch drain limit.
 
 Integration tests spin up the plugin image against real Filebeat containers.
-`test-integration` verifies Lumberjack v1/v2 compatibility across Filebeat
-generations; `test-transport` verifies the three TLS modes (certs are generated
-fresh per run, no fixtures committed).
+`test-integration` verifies Lumberjack v2 compatibility across Filebeat 5, 6, 7,
+and 8; `test-transport` verifies the three TLS modes (certs are generated fresh per
+run, no fixtures committed).
+
+## Protocol documentation
+
+`docs/` contains reference material for the Lumberjack/Beats wire protocol and
+Filebeat configuration, sourced from the canonical upstream repositories:
+
+| File | Content |
+|------|---------|
+| `docs/lumberjack-v1-protocol.md` | Wire format from `elastic/logstash-forwarder` (deprecated, v1 only) |
+| `docs/lumberjack-v2-protocol.md` | Derived from `elastic/go-lumber` source (no official v2 spec exists) |
+| `docs/plugin-protocol-notes.md` | ACK timing, `FLBTime` encoding, reserved keys, TLS modes |
+| `docs/filebeat-ssl-config.md` | Filebeat `ssl.*` YAML fields (`elastic-agent-libs/tlscommon`) |
+| `docs/filebeat-output-logstash.md` | Full `output.logstash.*` config and Filebeat event JSON structure |
 
 ## Important caveats
 
@@ -164,3 +179,7 @@ fresh per run, no fixtures committed).
 ## License
 
 Apache-2.0 (matches both upstream libraries).
+
+---
+
+*This project was vibe coded with [Claude Code](https://claude.ai/code).*

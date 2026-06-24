@@ -21,7 +21,7 @@ $(CERTS):
 test: ## Unit tests (no Docker required)
 	CGO_ENABLED=1 go test -v ./...
 
-test-integration: ## Integration tests: Filebeat 6, 7, 8 — version matrix (requires Docker)
+test-integration: ## Integration tests: Filebeat 5, 6, 7, 8 — version matrix (requires Docker)
 	CGO_ENABLED=1 go test -v -tags integration -run 'TestFilebeat' -timeout 10m ./...
 
 test-transport: ## Integration tests: no-TLS, TLS, mTLS transport matrix (requires Docker)

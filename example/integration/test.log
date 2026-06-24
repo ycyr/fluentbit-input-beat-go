@@ -1,1 +1,5 @@
-fluent-bit-beats-integration-test-marker
+{"level":"info","service":"app","msg":"startup complete","ts":"2026-06-24T12:34:55.000Z"}
+{"level":"error","service":"app","msg":"database connection failed","err":"dial tcp: connection refused","ts":"2026-06-24T12:34:55.500Z"}
+{"level":"warn","service":"app","msg":"retrying connection","attempt":1,"ts":"2026-06-24T12:34:56.000Z"}
+fluentbit-input-beat-go-integration-test-marker
+{"level":"info","service":"app","msg":"database connected","ts":"2026-06-24T12:34:57.000Z"}

@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	testImage  = "fluent-bit-beats-test"
-	testMarker = "fluent-bit-beats-integration-test-marker"
+	testImage  = "fluentbit-input-beat-go-test"
+	testMarker = "fluentbit-input-beat-go-integration-test-marker"
 )
 
 // TestMain builds the plugin image once before all integration tests run, then
@@ -28,6 +28,11 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	exec.Command("docker", "rmi", testImage).Run() //nolint:errcheck
 	os.Exit(code)
+}
+
+func TestFilebeatV5(t *testing.T) {
+	t.Parallel()
+	runIntegration(t, "example/integration/compose-v5.yml")
 }
 
 func TestFilebeatV6(t *testing.T) {
@@ -51,7 +56,7 @@ func TestFilebeatV8(t *testing.T) {
 func runIntegration(t *testing.T, composeFile string, extraEnv ...string) {
 	t.Helper()
 
-	project := "beats-int-" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
+	project := "beat-int-" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
 	env := append(os.Environ(), append([]string{"BEATS_TEST_IMAGE=" + testImage}, extraEnv...)...)
 
 	compose := func(args ...string) *exec.Cmd {

@@ -1,4 +1,4 @@
-module github.com/example/fluent-bit-beats
+module github.com/ycyr/fluentbit-input-beat-go
 
 go 1.26
 

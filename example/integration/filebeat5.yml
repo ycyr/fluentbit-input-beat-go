@@ -1,0 +1,12 @@
+# Filebeat 5.x uses "prospectors" and the same output.logstash syntax as 6.x.
+filebeat.prospectors:
+  - type: log
+    enabled: true
+    paths: [/logs/test.log]
+    scan_frequency: 500ms
+
+output.logstash:
+  hosts: ["fluent-bit:5044"]
+
+logging.level: info
+logging.to_stderr: true

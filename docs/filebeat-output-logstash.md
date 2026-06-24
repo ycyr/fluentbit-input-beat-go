@@ -139,9 +139,10 @@ schema differs:
 
 | Filebeat version | Protocol | Notes |
 |---|---|---|
-| 6.x | v1 or v2 | `prospectors:` syntax; older field names |
+| 5.x | v2 | `prospectors:` syntax; `beat.*` fields; no ECS |
+| 6.x | v2 | `prospectors:` syntax; `beat.*` fields |
 | 7.x | v2 | `inputs:` syntax; ECS fields introduced |
 | 8.x | v2 | Full ECS; `agent.*` replaces `beat.*` |
 
 Enable `enable_v1 true` in the plugin only if you need Beats older than 5.x.
-All Filebeat 6.x+ uses v2 by default.
+All Filebeat 5.x+ uses v2 by default.

@@ -215,7 +215,7 @@ func collect(c *beatsContext, wait time.Duration, now time.Time) []byte {
 		return nil
 	}
 
-	const maxBatch = 2000
+	const maxBatch = 2048
 
 	// Block briefly for the first record so we don't spin in a tight loop,
 	// then opportunistically drain whatever else is already queued.
@@ -224,11 +224,12 @@ func collect(c *beatsContext, wait time.Duration, now time.Time) []byte {
 		return nil
 	}
 
-	buf := appendRecord(nil, first, now)
+	enc := input.NewEncoder()
+	buf := appendRecord(nil, enc, first, now)
 	for i := 1; i < maxBatch; i++ {
 		select {
 		case rec := <-c.records:
-			buf = appendRecord(buf, rec, now)
+			buf = appendRecord(buf, enc, rec, now)
 		default:
 			return buf
 		}
@@ -251,8 +252,7 @@ func waitRecord(c *beatsContext, d time.Duration) (map[string]interface{}, bool)
 }
 
 // appendRecord msgpack-encodes one [timestamp, record] entry and appends it.
-func appendRecord(buf []byte, rec map[string]interface{}, fallback time.Time) []byte {
-	enc := input.NewEncoder() // fresh encoder => clean buffer per record
+func appendRecord(buf []byte, enc *input.FLBEncoder, rec map[string]interface{}, fallback time.Time) []byte {
 	entry := []interface{}{
 		input.FLBTime{Time: recordTime(rec, fallback)},
 		rec,

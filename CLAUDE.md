@@ -40,22 +40,33 @@ generated `in_beats.h` can be ignored.
 
 ```bash
 make test                # unit tests, no Docker
-make test-integration    # Filebeat 6 / 7 / 8 version matrix (requires Docker)
+make test-integration    # Filebeat 5 / 6 / 7 / 8 version matrix (requires Docker)
 make test-transport      # no-TLS / TLS / mTLS transport matrix (requires Docker)
 ```
 
 **Unit tests** (`main_test.go`) — pure Go, no cgo in the test file (Go forbids
 `import "C"` in `_test.go`). The testable logic was extracted from the cgo
 boundary: `parseBool`/`parseInt` from `cfgBool`/`cfgInt`, and `collect()` from
-`FLBPluginInputCallback`. The end-to-end test decodes the real msgpack output
-using `github.com/ugorji/go/codec` (already a transitive dep) and verifies the
-`FLBTime` ext timestamp.
+`FLBPluginInputCallback`. Tests cover:
+- `parseBool` / `parseInt` edge cases
+- `recordTime`: RFC3339 with/without nanoseconds, timezone offsets, fallback cases
+- `loadCertPool`: valid CA, non-PEM, missing file
+- `collect` end-to-end with realistic Filebeat 5.x/6.x/8.x event payloads
+- `@metadata` passthrough verification
+- Batch drain limit (exactly 2048 records per `collect()` call)
+- Empty queue blocking, shutdown unblocking, nil context
+
+Decodes real msgpack output using `github.com/ugorji/go/codec` (transitive dep)
+with a `flbTimeExt` decoder matching the 8-byte BE sec+nsec wire format.
 
 **Integration tests** (`integration_test.go`, `tls_integration_test.go`) — build
 tag `integration`. `TestMain` builds the plugin image once; all subtests run in
 parallel with isolated compose projects (unique `-p` names, no host-port
 conflicts). Certs for the TLS tests are generated fresh per subtest in
 `t.TempDir()` using stdlib `crypto/x509` — no committed fixtures.
+
+Version matrix: Filebeat 5.6.16, 6.8.23, 7.17.25, 8.13.4. Note: Filebeat 5.x
+uses `-strict.perms=false` (single-dash flag syntax); 6.x+ accepts `--`.
 
 ## Run
 
@@ -85,8 +96,9 @@ certs over the baked-in config (`build: ..`). The server cert SAN is
 - `FLBPluginInit` — reads config, starts the go-lumber TCP server, launches the
   `consume()` goroutine.
 - `FLBPluginInputCallback` — polled on a timer; blocks ~1s for the first record,
-  then drains up to `maxBatch` (2000) queued records into one C-allocated
-  msgpack buffer.
+  then drains up to `maxBatch` (2048, matching Filebeat's `bulk_max_size` default)
+  queued records into one C-allocated msgpack buffer. One `FLBEncoder` is
+  allocated per callback invocation and reused across all records in the batch.
 - `FLBPluginInputCleanupCallback` — deliberately a no-op (see C memory note).
 - `FLBPluginExit` — closes `done`, shuts the server, waits for the goroutine.
 
