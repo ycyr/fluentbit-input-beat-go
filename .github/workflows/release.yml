@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  GOPROXY: direct
+
+permissions:
+  contents: write
+
+jobs:
+
+  # ── Unit tests ─────────────────────────────────────────────────────────────
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go mod download
+      - run: CGO_ENABLED=1 go test -v ./...
+
+  # ── Build (amd64 + arm64) ──────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            cc: gcc
+          - arch: arm64
+            cc: aarch64-linux-gnu-gcc
+            apt: gcc-aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install cross-compiler
+        if: matrix.apt != ''
+        run: sudo apt-get install -y ${{ matrix.apt }}
+      - run: go mod download
+      - name: Build shared object
+        env:
+          CGO_ENABLED: 1
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.cc }}
+        run: go build -trimpath -buildmode=c-shared -o in_beats-linux-${{ matrix.arch }}.so .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: in_beats-linux-${{ matrix.arch }}
+          path: in_beats-linux-${{ matrix.arch }}.so
+
+  # ── GitHub Release ─────────────────────────────────────────────────────────
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: in_beats-linux-amd64
+      - uses: actions/download-artifact@v4
+        with:
+          name: in_beats-linux-arm64
+      - name: Create GitHub release
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            in_beats-linux-amd64.so \
+            in_beats-linux-arm64.so \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes \
+            --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
