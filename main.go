@@ -35,6 +35,14 @@ import (
 
 const pluginName = "beats"
 
+// record wraps one decoded Beats event. ack is non-nil only on the last event
+// of each go-lumber batch; collect() calls it after encoding the event into the
+// msgpack buffer, so ACKs are sent after Fluent Bit has received the data.
+type record struct {
+	fields map[string]interface{}
+	ack    func()
+}
+
 // beatsContext holds the state of the running plugin instance.
 //
 // NOTE: fluent-bit-go's input interface does NOT pass an instance context to
@@ -45,7 +53,7 @@ const pluginName = "beats"
 // listen address, parsed out of FLBPluginInit).
 type beatsContext struct {
 	srv      server.Server
-	records  chan map[string]interface{}
+	records  chan record
 	done     chan struct{}
 	shutdown sync.Once
 	wg       sync.WaitGroup
@@ -135,7 +143,7 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 
 	c := &beatsContext{
 		srv:     srv,
-		records: make(chan map[string]interface{}, bufSize),
+		records: make(chan record, bufSize),
 		done:    make(chan struct{}),
 	}
 	gCtx = c
@@ -146,16 +154,16 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 	return input.FLB_OK
 }
 
-// consume drains decoded batches from go-lumber, pushes their events onto the
-// internal channel, then ACKs the batch.
+// consume drains decoded batches from go-lumber and pushes their events onto
+// the internal channel. The batch ACK is attached to the last event of each
+// batch; collect() calls it after encoding that event into the msgpack buffer,
+// so the Beat is not ACKed until Fluent Bit has received the data.
 //
-// Durability note: we ACK once events are buffered in `records`, not after
-// Fluent Bit has actually flushed them downstream. The Go input API gives us
-// no flush confirmation hook, so this is "at-least-once up to the plugin
-// boundary". If Fluent Bit crashes with records still buffered, those are
-// lost even though the Beat already saw an ACK. That is the standard tradeoff
-// for this style of plugin; for stricter guarantees you would need a
-// persistent queue here.
+// Durability note: ACK now fires after Fluent Bit receives the buffer, not
+// merely after we buffer internally. The remaining window is between the
+// callback returning and Fluent Bit writing to an output — short, but real.
+// The Go input API exposes no flush-confirmation hook; a persistent queue in
+// consume() would be needed for stricter guarantees.
 func (c *beatsContext) consume() {
 	defer c.wg.Done()
 	ch := c.srv.ReceiveChan()
@@ -167,20 +175,24 @@ func (c *beatsContext) consume() {
 			if !ok {
 				return
 			}
-			for _, ev := range batch.Events {
-				rec, isMap := ev.(map[string]interface{})
+			events := batch.Events
+			last := len(events) - 1
+			for i, ev := range events {
+				fields, isMap := ev.(map[string]interface{})
 				if !isMap {
-					// Non-object event: wrap it so we still emit something.
-					rec = map[string]interface{}{"message": ev}
+					fields = map[string]interface{}{"message": ev}
+				}
+				r := record{fields: fields}
+				if i == last {
+					r.ack = batch.ACK
 				}
 				select {
-				case c.records <- rec:
+				case c.records <- r:
 				case <-c.done:
 					batch.ACK()
 					return
 				}
 			}
-			batch.ACK()
 		}
 	}
 }
@@ -225,11 +237,17 @@ func collect(c *beatsContext, wait time.Duration, now time.Time) []byte {
 	}
 
 	enc := input.NewEncoder()
-	buf := appendRecord(nil, enc, first, now)
+	buf := appendRecord(nil, enc, first.fields, now)
+	if first.ack != nil {
+		first.ack()
+	}
 	for i := 1; i < maxBatch; i++ {
 		select {
-		case rec := <-c.records:
-			buf = appendRecord(buf, enc, rec, now)
+		case r := <-c.records:
+			buf = appendRecord(buf, enc, r.fields, now)
+			if r.ack != nil {
+				r.ack()
+			}
 		default:
 			return buf
 		}
@@ -237,17 +255,17 @@ func collect(c *beatsContext, wait time.Duration, now time.Time) []byte {
 	return buf
 }
 
-// waitRecord returns the next record, or (nil,false) on timeout/shutdown.
-func waitRecord(c *beatsContext, d time.Duration) (map[string]interface{}, bool) {
+// waitRecord returns the next record, or a zero record + false on timeout/shutdown.
+func waitRecord(c *beatsContext, d time.Duration) (record, bool) {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
-	case rec, ok := <-c.records:
-		return rec, ok
+	case r, ok := <-c.records:
+		return r, ok
 	case <-t.C:
-		return nil, false
+		return record{}, false
 	case <-c.done:
-		return nil, false
+		return record{}, false
 	}
 }
 

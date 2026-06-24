@@ -102,8 +102,10 @@ certs over the baked-in config (`build: ..`). The server cert SAN is
 - `FLBPluginInputCleanupCallback` — deliberately a no-op (see C memory note).
 - `FLBPluginExit` — closes `done`, shuts the server, waits for the goroutine.
 
-`consume()` drains go-lumber batches onto the buffered `records` channel and
-ACKs each batch.
+`consume()` drains go-lumber batches onto the buffered `records` channel,
+attaching each batch's ACK to the last event. `collect()` calls that ACK after
+encoding the event into the msgpack buffer, so the Beat is ACKed only after
+Fluent Bit has received the data.
 
 ## Non-obvious constraints (change these carefully)
 
@@ -119,10 +121,13 @@ ACKs each batch.
 - **C memory ownership.** The buffer returned from `FLBPluginInputCallback` must
   be C-allocated (`C.CBytes`); Fluent Bit core owns and frees it. Do **not**
   free it in `FLBPluginInputCleanupCallback` — that would double-free.
-- **ACK timing / durability.** A batch is ACKed once buffered in the `records`
-  channel, not after Fluent Bit flushes downstream (the Go API exposes no flush
-  hook). A crash with records still buffered loses them despite the Beat having
-  seen an ACK. Stronger guarantees need a persistent queue in `consume()`.
+- **ACK timing / durability.** A batch is ACKed inside `collect()`, after its
+  events are encoded into the msgpack buffer and handed to Fluent Bit — not
+  merely after buffering in the channel. The remaining gap is between the
+  callback returning and Fluent Bit writing to an output; the Go API exposes no
+  flush-confirmation hook. For stronger guarantees, add a persistent queue in
+  `consume()`. Also: `record.ack` is non-nil only on the last event of each
+  batch — changing that invariant breaks ACK delivery.
 - **`ca_file` without `tls_active` is a hard startup error** — it would
   otherwise silently start a plaintext listener with no client-cert
   verification, the opposite of the operator's intent.

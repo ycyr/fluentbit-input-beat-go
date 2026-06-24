@@ -48,9 +48,11 @@ CGO_ENABLED=1 go test -v -tags integration -run 'TestTransport' -timeout 10m ./.
   be C-allocated (`C.CBytes`). Fluent Bit owns and frees it — do NOT free it in
   `FLBPluginInputCleanupCallback` (double-free).
 
-- **ACK timing.** Batches are ACKed after buffering in the `records` channel, not
-  after Fluent Bit flushes downstream. A crash with buffered records loses them
-  despite the Beat having seen an ACK.
+- **ACK timing.** Batches are ACKed inside `collect()`, after events are encoded
+  into the msgpack buffer handed to Fluent Bit — not merely after buffering in
+  the channel. `record.ack` is non-nil only on the last event of each batch;
+  `collect()` calls it after `appendRecord`. Remaining window: callback return →
+  Fluent Bit output flush (Go API has no confirmation hook).
 
 - **`ca_file` without `tls_active` is a hard startup error** — it would silently
   start a plaintext listener, opposite of the operator's intent.
