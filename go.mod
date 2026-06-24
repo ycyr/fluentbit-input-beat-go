@@ -1,6 +1,8 @@
 module github.com/example/fluent-bit-beats
 
-go 1.21
+go 1.26
+
+toolchain go1.26.4
 
 // Run `go mod tidy` after `go get` to populate exact versions + go.sum.
 // fluent-bit-go has no tagged releases, so it resolves to a pseudo-version

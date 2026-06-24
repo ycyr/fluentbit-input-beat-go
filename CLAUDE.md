@@ -20,7 +20,7 @@ are upstream forks living in adjacent directories. The workspace-level
 
 ## Build
 
-Requires Go 1.21+, a C toolchain (CGo on), and Fluent Bit 1.9+.
+Requires Go 1.26+, a C toolchain (CGo on), and Fluent Bit 1.9+.
 
 ```bash
 # fluent-bit-go has no tagged releases; the pseudo-version pinned in go.mod is a

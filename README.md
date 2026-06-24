@@ -16,7 +16,7 @@ Filebeat ──lumberjack(v1/v2)──▶ [beats input] ──msgpack──▶ F
 
 ## Build
 
-Requires Go 1.21+, a C toolchain (cgo), and Fluent Bit **1.9+** (input plugins
+Requires Go 1.26+, a C toolchain (cgo), and Fluent Bit **1.9+** (input plugins
 in Go need 1.9 or newer).
 
 ```bash

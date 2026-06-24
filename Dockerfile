@@ -1,5 +1,5 @@
 # ---- build stage ----
-FROM golang:1.22 AS builder
+FROM golang:1.26 AS builder
 WORKDIR /src
 COPY . .
 # fluent-bit-go has no tagged releases; the pseudo-version pinned in go.mod
