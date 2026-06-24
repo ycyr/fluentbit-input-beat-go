@@ -14,7 +14,24 @@ events into Fluent Bit via
 Filebeat ──lumberjack(v1/v2)──▶ [beats input] ──msgpack──▶ Fluent Bit pipeline ──▶ any output
 ```
 
-## Build
+## Download
+
+Pre-built shared objects for Linux are attached to each [GitHub Release](https://github.com/ycyr/fluentbit-input-beat-go/releases):
+
+| Asset | Architecture |
+|-------|-------------|
+| `in_beats-linux-amd64.so` | x86-64 |
+| `in_beats-linux-arm64.so` | ARM64 |
+
+Download the `.so` for your platform, then load it in Fluent Bit:
+
+```bash
+# plugins.conf
+[PLUGINS]
+    Path /path/to/in_beats-linux-amd64.so
+```
+
+## Build from source
 
 Requires Go 1.26+, a C toolchain (cgo), and Fluent Bit **1.9+** (input plugins
 in Go need 1.9 or newer).
