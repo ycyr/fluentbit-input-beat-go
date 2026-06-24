@@ -1,0 +1,33 @@
+services:
+  fluent-bit:
+    build: .
+    ports:
+      - "5044:5044"
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.4
+    user: root
+    command: filebeat -e --strict.perms=false
+    volumes:
+      - logs:/logs
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+    # No health gate: the fluent-bit image has no nc/curl to probe with, and
+    # filebeat's logstash output retries the connection on its own until the
+    # beats input is accepting. depends_on just sets start order.
+    depends_on:
+      - fluent-bit
+    restart: on-failure
+
+  flog:
+    image: mingrammer/flog
+    # -l loop forever  -d delay between lines  -t write to a log file
+    # -o output path  -w overwrite (the logs volume persists across runs, so
+    # without -w flog aborts with "already exists" on the second `up")
+    command: ["-l", "-d", "500ms", "-t", "log", "-o", "/logs/access.log", "-w"]
+    volumes:
+      - logs:/logs
+    depends_on:
+      - filebeat
+
+volumes:
+  logs:

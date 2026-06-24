@@ -1,0 +1,12 @@
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - /logs/*.log
+    scan_frequency: 1s
+
+output.logstash:
+  hosts: ["fluent-bit:5044"]
+
+logging.level: info
+logging.to_stderr: true
