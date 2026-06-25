@@ -193,8 +193,6 @@ Filebeat configuration, sourced from the canonical upstream repositories:
   of records in-flight when the plugin crashes. The remaining unaddressable
   window is Fluent Bit crashing after receiving the buffer but before writing to
   an output (the Go API has no flush-confirmation hook).
-- **Not compiled in this environment.** Build it yourself with the commands
-  above; pin `go.mod` versions via `go mod tidy`.
 
 ## License
 
