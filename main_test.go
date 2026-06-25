@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ugorji/go/codec"
+	"go.etcd.io/bbolt"
 )
 
 func TestParseBool(t *testing.T) {
@@ -329,6 +331,63 @@ func TestACKDelay(t *testing.T) {
 	collect(c, time.Millisecond, time.Now())
 	if got := acked.Load(); got != 1 {
 		t.Fatalf("acked = %d after collect(), want 1", got)
+	}
+}
+
+// TestWALReplay verifies that events written to the WAL are replayed onto the
+// records channel on startup, and that ACKing them removes their WAL entries.
+func TestWALReplay(t *testing.T) {
+	db, err := openWAL(filepath.Join(t.TempDir(), "wal.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Write two batches directly to the WAL (simulating a prior crashed run).
+	writeBatch := func(events []map[string]interface{}) {
+		t.Helper()
+		data, _ := json.Marshal(events)
+		if err := db.Update(func(tx *bbolt.Tx) error {
+			b := tx.Bucket([]byte(walBucket))
+			seq, _ := b.NextSequence()
+			key := make([]byte, 8)
+			binary.BigEndian.PutUint64(key, seq)
+			return b.Put(key, data)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBatch([]map[string]interface{}{{"msg": "one"}, {"msg": "two"}})
+	writeBatch([]map[string]interface{}{{"msg": "three"}})
+
+	c := &beatsContext{
+		records: make(chan record, 10),
+		done:    make(chan struct{}),
+		wal:     db,
+	}
+	if err := replayWAL(c); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(c.records); got != 3 {
+		t.Fatalf("channel has %d records after replay, want 3", got)
+	}
+
+	// Drain and fire ACKs; WAL should be empty afterward.
+	for i := 0; i < 3; i++ {
+		r := <-c.records
+		if r.ack != nil {
+			r.ack()
+		}
+	}
+
+	var remaining int
+	_ = db.View(func(tx *bbolt.Tx) error {
+		remaining = tx.Bucket([]byte(walBucket)).Stats().KeyN
+		return nil
+	})
+	if remaining != 0 {
+		t.Errorf("WAL has %d entries after all ACKs, want 0", remaining)
 	}
 }
 

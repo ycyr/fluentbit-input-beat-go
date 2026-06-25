@@ -105,6 +105,7 @@ Because Go **input** plugins cannot use Fluent Bit's reserved keys
 | `cert_file`   | —              | PEM server certificate (required when `tls_active`)                  |
 | `key_file`    | —              | PEM private key (required when `tls_active`)                         |
 | `ca_file`     | —              | PEM CA bundle; with `tls_active`, enables mTLS (`RequireAndVerifyClientCert`). Setting it without `tls_active` is rejected at startup. |
+| `wal_path`    | —              | Path to a bbolt WAL file (e.g. `/var/lib/fluent-bit/beats-wal.db`). When set, events are persisted to disk before ACKing, and replayed on restart if the plugin crashed with unprocessed records. Disabled by default. |
 
 ```ini
 # Plain TCP (Filebeat 7.x / 8.x default)
@@ -185,11 +186,12 @@ Filebeat configuration, sourced from the canonical upstream repositories:
   context, so state is package-level. Run one `[INPUT] beats` per Fluent Bit
   process (or extend `FLBPluginInit` with an address-keyed registry).
 - **ACK timing / durability.** Batches are ACKed inside `collect()`, after
-  events are encoded into the msgpack buffer handed to Fluent Bit — not merely
-  after buffering in the internal channel. The remaining window is between the
-  callback returning and Fluent Bit writing to an output; the Go API exposes no
-  flush-confirmation hook. For stronger guarantees, add a persistent queue in
-  `consume()`.
+  events are encoded into the msgpack buffer handed to Fluent Bit. With
+  `wal_path` set, events are also persisted to a bbolt WAL before pushing to
+  the internal channel, and replayed automatically on restart — closing the gap
+  of records in-flight when the plugin crashes. The remaining unaddressable
+  window is Fluent Bit crashing after receiving the buffer but before writing to
+  an output (the Go API has no flush-confirmation hook).
 - **Not compiled in this environment.** Build it yourself with the commands
   above; pin `go.mod` versions via `go mod tidy`.
 

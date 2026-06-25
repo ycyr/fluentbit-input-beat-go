@@ -21,6 +21,8 @@ import "C"
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
+	"encoding/json"
 	"log"
 	"os"
 	"strconv"
@@ -31,7 +33,10 @@ import (
 
 	"github.com/elastic/go-lumber/server"
 	"github.com/fluent/fluent-bit-go/input"
+	"go.etcd.io/bbolt"
 )
+
+const walBucket = "records"
 
 const pluginName = "beats"
 
@@ -57,6 +62,7 @@ type beatsContext struct {
 	done     chan struct{}
 	shutdown sync.Once
 	wg       sync.WaitGroup
+	wal      *bbolt.DB // nil when wal_path is not configured
 }
 
 var gCtx *beatsContext
@@ -148,6 +154,24 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 	}
 	gCtx = c
 
+	// --- optional WAL for stronger durability --------------------------------
+	walPath := cfg(plugin, "wal_path", "")
+	if walPath != "" {
+		db, err := openWAL(walPath)
+		if err != nil {
+			log.Printf("[%s] wal: failed to open %s: %v", pluginName, walPath, err)
+			return input.FLB_ERROR
+		}
+		c.wal = db
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			if err := replayWAL(c); err != nil {
+				log.Printf("[%s] wal: replay error: %v", pluginName, err)
+			}
+		}()
+	}
+
 	c.wg.Add(1)
 	go c.consume()
 
@@ -175,16 +199,52 @@ func (c *beatsContext) consume() {
 			if !ok {
 				return
 			}
-			events := batch.Events
-			last := len(events) - 1
-			for i, ev := range events {
-				fields, isMap := ev.(map[string]interface{})
-				if !isMap {
-					fields = map[string]interface{}{"message": ev}
+			if len(batch.Events) == 0 {
+				batch.ACK()
+				continue
+			}
+
+			// Pre-convert all events to maps (needed for both WAL and channel).
+			maps := make([]map[string]interface{}, len(batch.Events))
+			for i, ev := range batch.Events {
+				m, ok := ev.(map[string]interface{})
+				if !ok {
+					m = map[string]interface{}{"message": ev}
 				}
+				maps[i] = m
+			}
+
+			// Write the whole batch to WAL atomically before pushing to channel.
+			// ponytail: load all replayed records into memory before pushing;
+			// upgrade to streaming if WAL grows very large.
+			var walKey []byte
+			if c.wal != nil {
+				if data, err := json.Marshal(maps); err == nil {
+					_ = c.wal.Update(func(tx *bbolt.Tx) error {
+						b := tx.Bucket([]byte(walBucket))
+						seq, _ := b.NextSequence()
+						walKey = make([]byte, 8)
+						binary.BigEndian.PutUint64(walKey, seq)
+						return b.Put(walKey, data)
+					})
+				} else {
+					log.Printf("[%s] wal: marshal error, skipping WAL for batch: %v", pluginName, err)
+				}
+			}
+
+			last := len(maps) - 1
+			for i, fields := range maps {
 				r := record{fields: fields}
 				if i == last {
-					r.ack = batch.ACK
+					capturedKey := walKey
+					r.ack = func() {
+						batch.ACK()
+						if c.wal != nil && capturedKey != nil {
+							_ = c.wal.Update(func(tx *bbolt.Tx) error {
+								return tx.Bucket([]byte(walBucket)).Delete(capturedKey)
+							})
+						}
+					}
 				}
 				select {
 				case c.records <- r:
@@ -316,7 +376,77 @@ func FLBPluginExit() int {
 		}
 	})
 	c.wg.Wait()
+	if c.wal != nil {
+		_ = c.wal.Close()
+	}
 	return input.FLB_OK
+}
+
+// --- WAL helpers ----------------------------------------------------------
+
+// openWAL opens (or creates) the bbolt database at path and ensures the
+// records bucket exists.
+func openWAL(path string) (*bbolt.DB, error) {
+	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Update(func(tx *bbolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(walBucket))
+		return err
+	}); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// replayWAL reads all unprocessed entries from the WAL and pushes them onto
+// c.records. Each entry's ack deletes it from the WAL; entries that were
+// ACKed to the Beat but not yet deleted will be re-delivered to Fluent Bit.
+func replayWAL(c *beatsContext) error {
+	// Collect into memory first so the read transaction closes before we start
+	// pushing (pushing blocks when channel is full; blocked pushes must not hold
+	// an open read-tx or WAL deletes will deadlock bbolt).
+	var replayed []record
+	if err := c.wal.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte(walBucket)).ForEach(func(k, v []byte) error {
+			var events []map[string]interface{}
+			if err := json.Unmarshal(v, &events); err != nil {
+				log.Printf("[%s] wal: skipping corrupt entry: %v", pluginName, err)
+				return nil
+			}
+			key := make([]byte, 8)
+			copy(key, k)
+			last := len(events) - 1
+			for i, fields := range events {
+				r := record{fields: fields}
+				if i == last {
+					walKey := key
+					r.ack = func() {
+						_ = c.wal.Update(func(tx *bbolt.Tx) error {
+							return tx.Bucket([]byte(walBucket)).Delete(walKey)
+						})
+					}
+				}
+				replayed = append(replayed, r)
+			}
+			return nil
+		})
+	}); err != nil {
+		return err
+	}
+	if len(replayed) > 0 {
+		log.Printf("[%s] wal: replaying %d events", pluginName, len(replayed))
+	}
+	for _, r := range replayed {
+		select {
+		case c.records <- r:
+		case <-c.done:
+			return nil
+		}
+	}
+	return nil
 }
 
 // --- small config helpers -------------------------------------------------
