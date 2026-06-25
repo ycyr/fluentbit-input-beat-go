@@ -215,8 +215,6 @@ func (c *beatsContext) consume() {
 			}
 
 			// Write the whole batch to WAL atomically before pushing to channel.
-			// ponytail: load all replayed records into memory before pushing;
-			// upgrade to streaming if WAL grows very large.
 			var walKey []byte
 			if c.wal != nil {
 				if data, err := json.Marshal(maps); err == nil {
@@ -406,8 +404,10 @@ func openWAL(path string) (*bbolt.DB, error) {
 // ACKed to the Beat but not yet deleted will be re-delivered to Fluent Bit.
 func replayWAL(c *beatsContext) error {
 	// Collect into memory first so the read transaction closes before we start
-	// pushing (pushing blocks when channel is full; blocked pushes must not hold
-	// an open read-tx or WAL deletes will deadlock bbolt).
+	// pushing. Pushing blocks when the channel is full; a blocked push must not
+	// hold an open read-tx or WAL deletes (write-tx) would deadlock bbolt.
+	// Memory is bounded: consume() blocks on the channel before writing more WAL
+	// entries, so the WAL never exceeds buffer_size events (~8 MB at defaults).
 	var replayed []record
 	if err := c.wal.View(func(tx *bbolt.Tx) error {
 		return tx.Bucket([]byte(walBucket)).ForEach(func(k, v []byte) error {
