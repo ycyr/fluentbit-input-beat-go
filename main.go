@@ -36,9 +36,9 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-const walBucket = "records"
-
 const pluginName = "beats"
+
+var walBucket = []byte("records")
 
 // record wraps one decoded Beats event. ack is non-nil only on the last event
 // of each go-lumber batch; collect() calls it after encoding the event into the
@@ -95,8 +95,8 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 	}
 
 	// --- optional TLS (server-TLS or mTLS) --------------------------------
-	tlsMode := "none"
 	tlsActive := cfgBool(plugin, "tls_active", false)
+	tlsDesc := "none"
 
 	// Guard against the silent-plaintext footgun: ca_file only takes effect
 	// inside the TLS block below, so setting it without tls_active would give
@@ -130,9 +130,9 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 			}
 			tlsCfg.ClientCAs = pool
 			tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-			tlsMode = "mtls"
+			tlsDesc = "mtls"
 		} else {
-			tlsMode = "tls"
+			tlsDesc = "tls"
 		}
 
 		opts = append(opts, server.TLS(tlsCfg))
@@ -145,7 +145,7 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 		return input.FLB_ERROR
 	}
 	log.Printf("[%s] listening on %s (v1=%v v2=%v tls=%s)",
-		pluginName, addr, enableV1, enableV2, tlsMode)
+		pluginName, addr, enableV1, enableV2, tlsDesc)
 
 	c := &beatsContext{
 		srv:     srv,
@@ -226,7 +226,7 @@ func (c *beatsContext) consume() {
 					continue
 				}
 				if err := c.wal.Update(func(tx *bbolt.Tx) error {
-					b := tx.Bucket([]byte(walBucket))
+					b := tx.Bucket(walBucket)
 					seq, _ := b.NextSequence()
 					walKey = make([]byte, 8)
 					binary.BigEndian.PutUint64(walKey, seq)
@@ -246,7 +246,7 @@ func (c *beatsContext) consume() {
 						batch.ACK()
 						if c.wal != nil && capturedKey != nil {
 							if err := c.wal.Update(func(tx *bbolt.Tx) error {
-								return tx.Bucket([]byte(walBucket)).Delete(capturedKey)
+								return tx.Bucket(walBucket).Delete(capturedKey)
 							}); err != nil {
 								log.Printf("[%s] wal: delete error (entry will replay on restart): %v", pluginName, err)
 							}
@@ -298,8 +298,18 @@ func collect(c *beatsContext, wait time.Duration, now time.Time) []byte {
 
 	// Block briefly for the first record so we don't spin in a tight loop,
 	// then opportunistically drain whatever else is already queued.
-	first, ok := waitRecord(c, wait)
-	if !ok {
+	var first record
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case r, ok := <-c.records:
+		if !ok {
+			return nil
+		}
+		first = r
+	case <-t.C:
+		return nil
+	case <-c.done:
 		return nil
 	}
 
@@ -320,20 +330,6 @@ func collect(c *beatsContext, wait time.Duration, now time.Time) []byte {
 		}
 	}
 	return buf
-}
-
-// waitRecord returns the next record, or a zero record + false on timeout/shutdown.
-func waitRecord(c *beatsContext, d time.Duration) (record, bool) {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case r, ok := <-c.records:
-		return r, ok
-	case <-t.C:
-		return record{}, false
-	case <-c.done:
-		return record{}, false
-	}
 }
 
 // appendRecord msgpack-encodes one [timestamp, record] entry and appends it.
@@ -399,7 +395,7 @@ func openWAL(path string) (*bbolt.DB, error) {
 		return nil, err
 	}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(walBucket))
+		_, err := tx.CreateBucketIfNotExists(walBucket)
 		return err
 	}); err != nil {
 		_ = db.Close()
@@ -419,7 +415,7 @@ func replayWAL(c *beatsContext) error {
 	// entries, so the WAL never exceeds buffer_size events (~8 MB at defaults).
 	var replayed []record
 	if err := c.wal.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket([]byte(walBucket)).ForEach(func(k, v []byte) error {
+		return tx.Bucket(walBucket).ForEach(func(k, v []byte) error {
 			var events []map[string]interface{}
 			if err := json.Unmarshal(v, &events); err != nil {
 				log.Printf("[%s] wal: skipping corrupt entry: %v", pluginName, err)
@@ -434,7 +430,7 @@ func replayWAL(c *beatsContext) error {
 					walKey := key
 					r.ack = func() {
 						_ = c.wal.Update(func(tx *bbolt.Tx) error {
-							return tx.Bucket([]byte(walBucket)).Delete(walKey)
+							return tx.Bucket(walBucket).Delete(walKey)
 						})
 					}
 				}
