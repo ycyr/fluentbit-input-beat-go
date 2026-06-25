@@ -17,8 +17,8 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - run: go mod download
@@ -38,8 +38,8 @@ jobs:
             cc: aarch64-linux-gnu-gcc
             apt: gcc-aarch64-linux-gnu
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install cross-compiler
@@ -53,7 +53,7 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CC: ${{ matrix.cc }}
         run: go build -trimpath -buildmode=c-shared -o in_beats-linux-${{ matrix.arch }}.so .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: in_beats-linux-${{ matrix.arch }}
           path: in_beats-linux-${{ matrix.arch }}.so
@@ -64,10 +64,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: in_beats-linux-amd64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: in_beats-linux-arm64
       - name: Create GitHub release
