@@ -186,8 +186,8 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 // Durability note: ACK now fires after Fluent Bit receives the buffer, not
 // merely after we buffer internally. The remaining window is between the
 // callback returning and Fluent Bit writing to an output — short, but real.
-// The Go input API exposes no flush-confirmation hook; a persistent queue in
-// consume() would be needed for stricter guarantees.
+// The Go input API exposes no flush-confirmation hook; set wal_path for
+// disk-based durability.
 func (c *beatsContext) consume() {
 	defer c.wg.Done()
 	ch := c.srv.ReceiveChan()
