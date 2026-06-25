@@ -50,12 +50,11 @@ type record struct {
 
 // beatsContext holds the state of the running plugin instance.
 //
-// NOTE: fluent-bit-go's input interface does NOT pass an instance context to
-// the collect callback (FLBPluginInputCallback receives only data/size). That
-// means state has to live at package level, so only ONE [INPUT] section of
-// this plugin can run per Fluent Bit process. If you need several listeners,
-// run several Fluent Bit processes (or extend this with a registry keyed by
-// listen address, parsed out of FLBPluginInit).
+// NOTE: fluent-bit-go's input callback has the C signature (void **data,
+// size_t *size) — no instance context is passed. State must therefore be
+// package-level, limiting the plugin to ONE [INPUT] beats section per Fluent
+// Bit process. For multiple listeners with separate tags, run separate Fluent
+// Bit processes.
 type beatsContext struct {
 	srv      server.Server
 	records  chan record

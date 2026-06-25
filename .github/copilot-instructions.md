@@ -40,9 +40,11 @@ CGO_ENABLED=1 go test -v -tags integration -run 'TestTransport' -timeout 10m ./.
   `tls_active`, `cert_file`, `key_file`, `ca_file` instead. Do not reintroduce
   the reserved names.
 
-- **Single instance per process.** `FLBPluginInputCallback` receives no
-  per-instance context, so all state lives in package-level `var gCtx`. Only
-  one `[INPUT] beats` section per Fluent Bit process is supported.
+- **Single instance per process.** `FLBPluginInputCallback` has the C
+  signature `(void **data, size_t *size)` — no instance context is passed, so
+  all state is package-level (`var gCtx`). Only one `[INPUT] beats` section
+  per Fluent Bit process is supported. For multiple listeners with separate
+  tags, run separate Fluent Bit processes.
 
 - **C memory ownership.** The buffer returned from `FLBPluginInputCallback` must
   be C-allocated (`C.CBytes`). Fluent Bit owns and frees it — do NOT free it in

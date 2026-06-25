@@ -110,11 +110,11 @@ Fluent Bit has received the data.
 
 ## Non-obvious constraints (change these carefully)
 
-- **Single instance per process.** The input callback receives no per-instance
-  context, so all state lives in the package-level `var gCtx`. Only one
-  `[INPUT] beats` section per Fluent Bit process works. Multiple listeners
-  require multiple processes, or reworking `gCtx` into an address-keyed
-  registry.
+- **Single instance per process.** `FLBPluginInputCallback` has the C
+  signature `(void **data, size_t *size)` — no instance context is passed, so
+  all state is package-level (`var gCtx`). Only one `[INPUT] beats` section
+  per Fluent Bit process is supported. For multiple listeners with separate
+  tags, run separate Fluent Bit processes.
 - **Reserved config keys.** Fluent Bit overwrites `host`, `port`, `listen`, and
   all `tls.*` on input plugins. This plugin therefore uses `address`,
   `tls_active`, `cert_file`, `key_file`, `ca_file` instead. Do not reintroduce

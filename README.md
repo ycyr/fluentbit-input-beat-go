@@ -182,9 +182,10 @@ Filebeat configuration, sourced from the canonical upstream repositories:
 
 ## Important caveats
 
-- **Single instance per process.** The Go input callback gets no per-instance
-  context, so state is package-level. Run one `[INPUT] beats` per Fluent Bit
-  process (or extend `FLBPluginInit` with an address-keyed registry).
+- **Single instance per process.** `FLBPluginInputCallback` has the C
+  signature `(void **data, size_t *size)` — no instance context is passed.
+  Only one `[INPUT] beats` section per Fluent Bit process is supported. For
+  multiple listeners with separate tags, run separate Fluent Bit processes.
 - **ACK timing / durability.** Batches are ACKed inside `collect()`, after
   events are encoded into the msgpack buffer handed to Fluent Bit. With
   `wal_path` set, events are also persisted to a bbolt WAL before pushing to
