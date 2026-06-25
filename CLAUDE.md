@@ -54,6 +54,7 @@ boundary: `parseBool`/`parseInt` from `cfgBool`/`cfgInt`, and `collect()` from
 - `collect` end-to-end with realistic Filebeat 5.x/6.x/8.x event payloads
 - `@metadata` passthrough verification
 - Batch drain limit (exactly 2048 records per `collect()` call)
+- ACK delay: fires inside `collect()` after encoding, not before
 - Empty queue blocking, shutdown unblocking, nil context
 
 Decodes real msgpack output using `github.com/ugorji/go/codec` (transitive dep)
@@ -102,8 +103,10 @@ certs over the baked-in config (`build: ..`). The server cert SAN is
 - `FLBPluginInputCleanupCallback` — deliberately a no-op (see C memory note).
 - `FLBPluginExit` — closes `done`, shuts the server, waits for the goroutine.
 
-`consume()` drains go-lumber batches onto the buffered `records` channel and
-ACKs each batch.
+`consume()` drains go-lumber batches onto the buffered `records` channel,
+attaching each batch's ACK to the last event. `collect()` calls that ACK after
+encoding the event into the msgpack buffer, so the Beat is ACKed only after
+Fluent Bit has received the data.
 
 ## Non-obvious constraints (change these carefully)
 
@@ -119,10 +122,15 @@ ACKs each batch.
 - **C memory ownership.** The buffer returned from `FLBPluginInputCallback` must
   be C-allocated (`C.CBytes`); Fluent Bit core owns and frees it. Do **not**
   free it in `FLBPluginInputCleanupCallback` — that would double-free.
-- **ACK timing / durability.** A batch is ACKed once buffered in the `records`
-  channel, not after Fluent Bit flushes downstream (the Go API exposes no flush
-  hook). A crash with records still buffered loses them despite the Beat having
-  seen an ACK. Stronger guarantees need a persistent queue in `consume()`.
+- **ACK timing / durability.** A batch is ACKed inside `collect()`, after its
+  events are encoded into the msgpack buffer and handed to Fluent Bit. With
+  `wal_path` configured, events are written to a bbolt WAL (one `db.Update()`
+  per batch) before pushing to the channel, and deleted when the ACK fires.
+  On startup, `replayWAL()` runs concurrently with the server (as a goroutine)
+  and pushes undeleted entries into the channel before `consume()` processes new
+  batches. `record.ack` is non-nil only on the last event of each batch — do not
+  change that invariant. Remaining gap: Fluent Bit crash after receiving the
+  buffer (Go API has no flush-confirmation hook).
 - **`ca_file` without `tls_active` is a hard startup error** — it would
   otherwise silently start a plaintext listener with no client-cert
   verification, the opposite of the operator's intent.

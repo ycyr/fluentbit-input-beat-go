@@ -7,15 +7,18 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ugorji/go/codec"
+	"go.etcd.io/bbolt"
 )
 
 func TestParseBool(t *testing.T) {
@@ -140,14 +143,14 @@ func TestLoadCertPool(t *testing.T) {
 // timestamp (sourced from @timestamp, else the supplied receive time).
 func TestCollectEndToEnd(t *testing.T) {
 	c := &beatsContext{
-		records: make(chan map[string]interface{}, 8),
+		records: make(chan record, 8),
 		done:    make(chan struct{}),
 	}
 
 	atTS := time.Date(2026, 6, 24, 10, 11, 12, 0, time.UTC)
 	recvTS := time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)
-	c.records <- map[string]interface{}{"@timestamp": atTS.Format(time.RFC3339Nano), "message": "one"}
-	c.records <- map[string]interface{}{"message": "two"} // no @timestamp -> recvTS
+	c.records <- record{fields: map[string]interface{}{"@timestamp": atTS.Format(time.RFC3339Nano), "message": "one"}}
+	c.records <- record{fields: map[string]interface{}{"message": "two"}} // no @timestamp -> recvTS
 
 	buf := collect(c, time.Second, recvTS)
 	if len(buf) == 0 {
@@ -177,7 +180,7 @@ func TestCollectEndToEnd(t *testing.T) {
 // returns nil (no spinning, no allocation) when the queue stays empty.
 func TestCollectEmpty(t *testing.T) {
 	c := &beatsContext{
-		records: make(chan map[string]interface{}),
+		records: make(chan record),
 		done:    make(chan struct{}),
 	}
 
@@ -197,7 +200,7 @@ func TestCollectEmpty(t *testing.T) {
 // if no record ever arrives (the shutdown path).
 func TestCollectDoneUnblocks(t *testing.T) {
 	c := &beatsContext{
-		records: make(chan map[string]interface{}),
+		records: make(chan record),
 		done:    make(chan struct{}),
 	}
 	close(c.done)
@@ -250,11 +253,11 @@ func TestCollectFilebeatEvents(t *testing.T) {
 	}
 
 	c := &beatsContext{
-		records: make(chan map[string]interface{}, 4),
+		records: make(chan record, 4),
 		done:    make(chan struct{}),
 	}
-	c.records <- fb8
-	c.records <- fb6
+	c.records <- record{fields: fb8}
+	c.records <- record{fields: fb6}
 
 	entries := decodeFLBStream(t, collect(c, time.Millisecond, now))
 	if len(entries) != 2 {
@@ -289,11 +292,11 @@ func TestCollectFilebeatEvents(t *testing.T) {
 func TestCollectMaxBatch(t *testing.T) {
 	const total = 2048 + 5
 	c := &beatsContext{
-		records: make(chan map[string]interface{}, total),
+		records: make(chan record, total),
 		done:    make(chan struct{}),
 	}
 	for i := 0; i < total; i++ {
-		c.records <- map[string]interface{}{"n": i}
+		c.records <- record{fields: map[string]interface{}{"n": i}}
 	}
 	now := time.Now()
 
@@ -304,6 +307,87 @@ func TestCollectMaxBatch(t *testing.T) {
 	second := decodeFLBStream(t, collect(c, time.Millisecond, now))
 	if len(second) != 5 {
 		t.Errorf("second collect: %d entries, want 5", len(second))
+	}
+}
+
+// TestACKDelay verifies that batch ACKs are fired inside collect() after the
+// records are encoded into the buffer — not before collect() is called.
+func TestACKDelay(t *testing.T) {
+	c := &beatsContext{
+		records: make(chan record, 4),
+		done:    make(chan struct{}),
+	}
+
+	var acked atomic.Int32
+	ack := func() { acked.Add(1) }
+
+	// Simulate a two-event batch: ack attached only to last event.
+	c.records <- record{fields: map[string]interface{}{"n": 0}}
+	c.records <- record{fields: map[string]interface{}{"n": 1}, ack: ack}
+
+	if acked.Load() != 0 {
+		t.Fatal("ACK fired before collect() was called")
+	}
+	collect(c, time.Millisecond, time.Now())
+	if got := acked.Load(); got != 1 {
+		t.Fatalf("acked = %d after collect(), want 1", got)
+	}
+}
+
+// TestWALReplay verifies that events written to the WAL are replayed onto the
+// records channel on startup, and that ACKing them removes their WAL entries.
+func TestWALReplay(t *testing.T) {
+	db, err := openWAL(filepath.Join(t.TempDir(), "wal.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Write two batches directly to the WAL (simulating a prior crashed run).
+	writeBatch := func(events []map[string]interface{}) {
+		t.Helper()
+		data, _ := json.Marshal(events)
+		if err := db.Update(func(tx *bbolt.Tx) error {
+			b := tx.Bucket([]byte(walBucket))
+			seq, _ := b.NextSequence()
+			key := make([]byte, 8)
+			binary.BigEndian.PutUint64(key, seq)
+			return b.Put(key, data)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBatch([]map[string]interface{}{{"msg": "one"}, {"msg": "two"}})
+	writeBatch([]map[string]interface{}{{"msg": "three"}})
+
+	c := &beatsContext{
+		records: make(chan record, 10),
+		done:    make(chan struct{}),
+		wal:     db,
+	}
+	if err := replayWAL(c); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(c.records); got != 3 {
+		t.Fatalf("channel has %d records after replay, want 3", got)
+	}
+
+	// Drain and fire ACKs; WAL should be empty afterward.
+	for i := 0; i < 3; i++ {
+		r := <-c.records
+		if r.ack != nil {
+			r.ack()
+		}
+	}
+
+	var remaining int
+	_ = db.View(func(tx *bbolt.Tx) error {
+		remaining = tx.Bucket([]byte(walBucket)).Stats().KeyN
+		return nil
+	})
+	if remaining != 0 {
+		t.Errorf("WAL has %d entries after all ACKs, want 0", remaining)
 	}
 }
 

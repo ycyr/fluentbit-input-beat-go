@@ -21,6 +21,8 @@ import "C"
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
+	"encoding/json"
 	"log"
 	"os"
 	"strconv"
@@ -31,9 +33,20 @@ import (
 
 	"github.com/elastic/go-lumber/server"
 	"github.com/fluent/fluent-bit-go/input"
+	"go.etcd.io/bbolt"
 )
 
 const pluginName = "beats"
+
+var walBucket = []byte("records")
+
+// record wraps one decoded Beats event. ack is non-nil only on the last event
+// of each go-lumber batch; collect() calls it after encoding the event into the
+// in-memory msgpack buffer, just before FLBPluginInputCallback returns it to Fluent Bit.
+type record struct {
+	fields map[string]interface{}
+	ack    func()
+}
 
 // beatsContext holds the state of the running plugin instance.
 //
@@ -45,10 +58,11 @@ const pluginName = "beats"
 // listen address, parsed out of FLBPluginInit).
 type beatsContext struct {
 	srv      server.Server
-	records  chan map[string]interface{}
+	records  chan record
 	done     chan struct{}
 	shutdown sync.Once
 	wg       sync.WaitGroup
+	wal      *bbolt.DB // nil when wal_path is not configured
 }
 
 var gCtx *beatsContext
@@ -81,8 +95,8 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 	}
 
 	// --- optional TLS (server-TLS or mTLS) --------------------------------
-	tlsMode := "none"
 	tlsActive := cfgBool(plugin, "tls_active", false)
+	tlsDesc := "none"
 
 	// Guard against the silent-plaintext footgun: ca_file only takes effect
 	// inside the TLS block below, so setting it without tls_active would give
@@ -116,9 +130,9 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 			}
 			tlsCfg.ClientCAs = pool
 			tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-			tlsMode = "mtls"
+			tlsDesc = "mtls"
 		} else {
-			tlsMode = "tls"
+			tlsDesc = "tls"
 		}
 
 		opts = append(opts, server.TLS(tlsCfg))
@@ -131,14 +145,33 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 		return input.FLB_ERROR
 	}
 	log.Printf("[%s] listening on %s (v1=%v v2=%v tls=%s)",
-		pluginName, addr, enableV1, enableV2, tlsMode)
+		pluginName, addr, enableV1, enableV2, tlsDesc)
 
 	c := &beatsContext{
 		srv:     srv,
-		records: make(chan map[string]interface{}, bufSize),
+		records: make(chan record, bufSize),
 		done:    make(chan struct{}),
 	}
 	gCtx = c
+
+	// --- optional WAL for stronger durability --------------------------------
+	walPath := cfg(plugin, "wal_path", "")
+	if walPath != "" {
+		db, err := openWAL(walPath)
+		if err != nil {
+			log.Printf("[%s] wal: failed to open %s: %v", pluginName, walPath, err)
+			_ = srv.Close()
+			return input.FLB_ERROR
+		}
+		c.wal = db
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			if err := replayWAL(c); err != nil {
+				log.Printf("[%s] wal: replay error: %v", pluginName, err)
+			}
+		}()
+	}
 
 	c.wg.Add(1)
 	go c.consume()
@@ -146,16 +179,16 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 	return input.FLB_OK
 }
 
-// consume drains decoded batches from go-lumber, pushes their events onto the
-// internal channel, then ACKs the batch.
+// consume drains decoded batches from go-lumber and pushes their events onto
+// the internal channel. The batch ACK is attached to the last event of each
+// batch; collect() calls it after encoding that event into the msgpack buffer,
+// so the Beat is not ACKed until Fluent Bit has received the data.
 //
-// Durability note: we ACK once events are buffered in `records`, not after
-// Fluent Bit has actually flushed them downstream. The Go input API gives us
-// no flush confirmation hook, so this is "at-least-once up to the plugin
-// boundary". If Fluent Bit crashes with records still buffered, those are
-// lost even though the Beat already saw an ACK. That is the standard tradeoff
-// for this style of plugin; for stricter guarantees you would need a
-// persistent queue here.
+// Durability note: ACK now fires after Fluent Bit receives the buffer, not
+// merely after we buffer internally. The remaining window is between the
+// callback returning and Fluent Bit writing to an output — short, but real.
+// The Go input API exposes no flush-confirmation hook; set wal_path for
+// disk-based durability.
 func (c *beatsContext) consume() {
 	defer c.wg.Done()
 	ch := c.srv.ReceiveChan()
@@ -167,20 +200,66 @@ func (c *beatsContext) consume() {
 			if !ok {
 				return
 			}
-			for _, ev := range batch.Events {
-				rec, isMap := ev.(map[string]interface{})
-				if !isMap {
-					// Non-object event: wrap it so we still emit something.
-					rec = map[string]interface{}{"message": ev}
+			if len(batch.Events) == 0 {
+				batch.ACK()
+				continue
+			}
+
+			// Pre-convert all events to maps (needed for both WAL and channel).
+			maps := make([]map[string]interface{}, len(batch.Events))
+			for i, ev := range batch.Events {
+				m, ok := ev.(map[string]interface{})
+				if !ok {
+					m = map[string]interface{}{"message": ev}
+				}
+				maps[i] = m
+			}
+
+			// Write the whole batch to WAL atomically before pushing to channel.
+			// On failure, skip the batch entirely (don't push, don't ACK) so the
+			// Beat retries after its timeout — preserving the durability contract.
+			var walKey []byte
+			if c.wal != nil {
+				data, err := json.Marshal(maps)
+				if err != nil {
+					log.Printf("[%s] wal: marshal error, dropping batch so Beat retries: %v", pluginName, err)
+					continue
+				}
+				if err := c.wal.Update(func(tx *bbolt.Tx) error {
+					b := tx.Bucket(walBucket)
+					seq, _ := b.NextSequence()
+					walKey = make([]byte, 8)
+					binary.BigEndian.PutUint64(walKey, seq)
+					return b.Put(walKey, data)
+				}); err != nil {
+					log.Printf("[%s] wal: write error, dropping batch so Beat retries: %v", pluginName, err)
+					continue
+				}
+			}
+
+			last := len(maps) - 1
+			for i, fields := range maps {
+				r := record{fields: fields}
+				if i == last {
+					capturedKey := walKey
+					r.ack = func() {
+						batch.ACK()
+						if c.wal != nil && capturedKey != nil {
+							if err := c.wal.Update(func(tx *bbolt.Tx) error {
+								return tx.Bucket(walBucket).Delete(capturedKey)
+							}); err != nil {
+								log.Printf("[%s] wal: delete error (entry will replay on restart): %v", pluginName, err)
+							}
+						}
+					}
 				}
 				select {
-				case c.records <- rec:
+				case c.records <- r:
 				case <-c.done:
 					batch.ACK()
 					return
 				}
 			}
-			batch.ACK()
 		}
 	}
 }
@@ -219,36 +298,38 @@ func collect(c *beatsContext, wait time.Duration, now time.Time) []byte {
 
 	// Block briefly for the first record so we don't spin in a tight loop,
 	// then opportunistically drain whatever else is already queued.
-	first, ok := waitRecord(c, wait)
-	if !ok {
+	var first record
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case r, ok := <-c.records:
+		if !ok {
+			return nil
+		}
+		first = r
+	case <-t.C:
+		return nil
+	case <-c.done:
 		return nil
 	}
 
 	enc := input.NewEncoder()
-	buf := appendRecord(nil, enc, first, now)
+	buf := appendRecord(nil, enc, first.fields, now)
+	if first.ack != nil {
+		first.ack()
+	}
 	for i := 1; i < maxBatch; i++ {
 		select {
-		case rec := <-c.records:
-			buf = appendRecord(buf, enc, rec, now)
+		case r := <-c.records:
+			buf = appendRecord(buf, enc, r.fields, now)
+			if r.ack != nil {
+				r.ack()
+			}
 		default:
 			return buf
 		}
 	}
 	return buf
-}
-
-// waitRecord returns the next record, or (nil,false) on timeout/shutdown.
-func waitRecord(c *beatsContext, d time.Duration) (map[string]interface{}, bool) {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case rec, ok := <-c.records:
-		return rec, ok
-	case <-t.C:
-		return nil, false
-	case <-c.done:
-		return nil, false
-	}
 }
 
 // appendRecord msgpack-encodes one [timestamp, record] entry and appends it.
@@ -298,7 +379,79 @@ func FLBPluginExit() int {
 		}
 	})
 	c.wg.Wait()
+	if c.wal != nil {
+		_ = c.wal.Close()
+	}
 	return input.FLB_OK
+}
+
+// --- WAL helpers ----------------------------------------------------------
+
+// openWAL opens (or creates) the bbolt database at path and ensures the
+// records bucket exists.
+func openWAL(path string) (*bbolt.DB, error) {
+	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Update(func(tx *bbolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists(walBucket)
+		return err
+	}); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// replayWAL reads all unprocessed entries from the WAL and pushes them onto
+// c.records. Each entry's ack deletes it from the WAL; entries that were
+// ACKed to the Beat but not yet deleted will be re-delivered to Fluent Bit.
+func replayWAL(c *beatsContext) error {
+	// Collect into memory first so the read transaction closes before we start
+	// pushing. Pushing blocks when the channel is full; a blocked push must not
+	// hold an open read-tx or WAL deletes (write-tx) would deadlock bbolt.
+	// Memory is bounded: consume() blocks on the channel before writing more WAL
+	// entries, so the WAL never exceeds buffer_size events (~8 MB at defaults).
+	var replayed []record
+	if err := c.wal.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(walBucket).ForEach(func(k, v []byte) error {
+			var events []map[string]interface{}
+			if err := json.Unmarshal(v, &events); err != nil {
+				log.Printf("[%s] wal: skipping corrupt entry: %v", pluginName, err)
+				return nil
+			}
+			key := make([]byte, 8)
+			copy(key, k)
+			last := len(events) - 1
+			for i, fields := range events {
+				r := record{fields: fields}
+				if i == last {
+					walKey := key
+					r.ack = func() {
+						_ = c.wal.Update(func(tx *bbolt.Tx) error {
+							return tx.Bucket(walBucket).Delete(walKey)
+						})
+					}
+				}
+				replayed = append(replayed, r)
+			}
+			return nil
+		})
+	}); err != nil {
+		return err
+	}
+	if len(replayed) > 0 {
+		log.Printf("[%s] wal: replaying %d events", pluginName, len(replayed))
+	}
+	for _, r := range replayed {
+		select {
+		case c.records <- r:
+		case <-c.done:
+			return nil
+		}
+	}
+	return nil
 }
 
 // --- small config helpers -------------------------------------------------
