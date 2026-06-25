@@ -42,7 +42,7 @@ const pluginName = "beats"
 
 // record wraps one decoded Beats event. ack is non-nil only on the last event
 // of each go-lumber batch; collect() calls it after encoding the event into the
-// msgpack buffer, so ACKs are sent after Fluent Bit has received the data.
+// in-memory msgpack buffer, just before FLBPluginInputCallback returns it to Fluent Bit.
 type record struct {
 	fields map[string]interface{}
 	ack    func()
@@ -160,6 +160,7 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 		db, err := openWAL(walPath)
 		if err != nil {
 			log.Printf("[%s] wal: failed to open %s: %v", pluginName, walPath, err)
+			_ = srv.Close()
 			return input.FLB_ERROR
 		}
 		c.wal = db
@@ -215,18 +216,24 @@ func (c *beatsContext) consume() {
 			}
 
 			// Write the whole batch to WAL atomically before pushing to channel.
+			// On failure, skip the batch entirely (don't push, don't ACK) so the
+			// Beat retries after its timeout — preserving the durability contract.
 			var walKey []byte
 			if c.wal != nil {
-				if data, err := json.Marshal(maps); err == nil {
-					_ = c.wal.Update(func(tx *bbolt.Tx) error {
-						b := tx.Bucket([]byte(walBucket))
-						seq, _ := b.NextSequence()
-						walKey = make([]byte, 8)
-						binary.BigEndian.PutUint64(walKey, seq)
-						return b.Put(walKey, data)
-					})
-				} else {
-					log.Printf("[%s] wal: marshal error, skipping WAL for batch: %v", pluginName, err)
+				data, err := json.Marshal(maps)
+				if err != nil {
+					log.Printf("[%s] wal: marshal error, dropping batch so Beat retries: %v", pluginName, err)
+					continue
+				}
+				if err := c.wal.Update(func(tx *bbolt.Tx) error {
+					b := tx.Bucket([]byte(walBucket))
+					seq, _ := b.NextSequence()
+					walKey = make([]byte, 8)
+					binary.BigEndian.PutUint64(walKey, seq)
+					return b.Put(walKey, data)
+				}); err != nil {
+					log.Printf("[%s] wal: write error, dropping batch so Beat retries: %v", pluginName, err)
+					continue
 				}
 			}
 
@@ -238,9 +245,11 @@ func (c *beatsContext) consume() {
 					r.ack = func() {
 						batch.ACK()
 						if c.wal != nil && capturedKey != nil {
-							_ = c.wal.Update(func(tx *bbolt.Tx) error {
+							if err := c.wal.Update(func(tx *bbolt.Tx) error {
 								return tx.Bucket([]byte(walBucket)).Delete(capturedKey)
-							})
+							}); err != nil {
+								log.Printf("[%s] wal: delete error (entry will replay on restart): %v", pluginName, err)
+							}
 						}
 					}
 				}

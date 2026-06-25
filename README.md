@@ -105,7 +105,7 @@ Because Go **input** plugins cannot use Fluent Bit's reserved keys
 | `cert_file`   | —              | PEM server certificate (required when `tls_active`)                  |
 | `key_file`    | —              | PEM private key (required when `tls_active`)                         |
 | `ca_file`     | —              | PEM CA bundle; with `tls_active`, enables mTLS (`RequireAndVerifyClientCert`). Setting it without `tls_active` is rejected at startup. |
-| `wal_path`    | —              | Path to a bbolt WAL file (e.g. `/var/lib/fluent-bit/beats-wal.db`). When set, events are persisted to disk before ACKing, and replayed on restart if the plugin crashed with unprocessed records. Disabled by default. |
+| `wal_path`    | —              | Path to a bbolt WAL file (e.g. `/var/lib/fluent-bit/beats-wal.db`). When set, each batch is written to disk before being enqueued; WAL write failures cause the batch to be dropped (Beat retries). Undeleted entries are replayed on restart. Disabled by default. |
 
 ```ini
 # Plain TCP (Filebeat 7.x / 8.x default)

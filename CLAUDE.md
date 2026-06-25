@@ -126,8 +126,9 @@ Fluent Bit has received the data.
   events are encoded into the msgpack buffer and handed to Fluent Bit. With
   `wal_path` configured, events are written to a bbolt WAL (one `db.Update()`
   per batch) before pushing to the channel, and deleted when the ACK fires.
-  On startup, `replayWAL()` replays any undeleted entries before starting the
-  server. `record.ack` is non-nil only on the last event of each batch — do not
+  On startup, `replayWAL()` runs concurrently with the server (as a goroutine)
+  and pushes undeleted entries into the channel before `consume()` processes new
+  batches. `record.ack` is non-nil only on the last event of each batch — do not
   change that invariant. Remaining gap: Fluent Bit crash after receiving the
   buffer (Go API has no flush-confirmation hook).
 - **`ca_file` without `tls_active` is a hard startup error** — it would
