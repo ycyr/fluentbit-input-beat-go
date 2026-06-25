@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-24
+
 ### Added
 - Optional WAL (`wal_path` config key) using `go.etcd.io/bbolt` for stronger
   delivery durability: events are persisted to disk before being enqueued, and
@@ -45,5 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration test matrix: Filebeat 5/6/7/8 and no-TLS/TLS/mTLS transports.
 - Protocol documentation in `docs/`.
 
-[Unreleased]: https://github.com/ycyr/fluentbit-input-beat-go/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ycyr/fluentbit-input-beat-go/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ycyr/fluentbit-input-beat-go/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ycyr/fluentbit-input-beat-go/releases/tag/v0.1.0
