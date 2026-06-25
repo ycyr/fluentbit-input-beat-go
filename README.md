@@ -184,12 +184,12 @@ Filebeat configuration, sourced from the canonical upstream repositories:
 - **Single instance per process.** The Go input callback gets no per-instance
   context, so state is package-level. Run one `[INPUT] beats` per Fluent Bit
   process (or extend `FLBPluginInit` with an address-keyed registry).
-- **ACK timing / durability.** The plugin ACKs a batch once its events are
-  buffered internally, not after Fluent Bit flushes them downstream — the Go
-  API exposes no flush-confirmation hook. This is at-least-once *up to the
-  plugin boundary*; a Fluent Bit crash with records still buffered loses them
-  despite the Beat having seen an ACK. For stronger guarantees, add a
-  persistent queue in `consume()`.
+- **ACK timing / durability.** Batches are ACKed inside `collect()`, after
+  events are encoded into the msgpack buffer handed to Fluent Bit — not merely
+  after buffering in the internal channel. The remaining window is between the
+  callback returning and Fluent Bit writing to an output; the Go API exposes no
+  flush-confirmation hook. For stronger guarantees, add a persistent queue in
+  `consume()`.
 - **Not compiled in this environment.** Build it yourself with the commands
   above; pin `go.mod` versions via `go mod tidy`.
 

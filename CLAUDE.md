@@ -54,6 +54,7 @@ boundary: `parseBool`/`parseInt` from `cfgBool`/`cfgInt`, and `collect()` from
 - `collect` end-to-end with realistic Filebeat 5.x/6.x/8.x event payloads
 - `@metadata` passthrough verification
 - Batch drain limit (exactly 2048 records per `collect()` call)
+- ACK delay: fires inside `collect()` after encoding, not before
 - Empty queue blocking, shutdown unblocking, nil context
 
 Decodes real msgpack output using `github.com/ugorji/go/codec` (transitive dep)
